@@ -2977,17 +2977,103 @@ Paste the deployed Apps Script Web App URL into PAYBILL_GITHUB_API_URL.
       }, { basic:0, da:0, hra:0, earnings:0, deductions:0, agNet:0, netPay:0, gpf:0, apgli:0, gis:0, pt:0, it:0, cps:0, ehf:0, ewf:0 });
     }
 
+    function validationKey(value) {
+      return String(value ?? '').trim().replace(/\s+/g, ' ');
+    }
+
+    function employeeValidationName(emp) {
+      return emp.name || emp.employeeCode || emp.treasuryId || 'Unknown Employee';
+    }
+
+    function addDuplicateValidationIssues(issues, label, valuesByEmployee) {
+      const seen = {};
+      valuesByEmployee.forEach(item => {
+        const key = validationKey(item.value);
+        if (!key) return;
+        if (!seen[key]) seen[key] = [];
+        seen[key].push(item.name);
+      });
+
+      Object.entries(seen).forEach(([value, names]) => {
+        const uniqueNames = [...new Set(names.filter(Boolean))];
+        if (uniqueNames.length > 1) {
+          issues.push(`${label} duplicate found: ${value} used by ${uniqueNames.join(', ')}`);
+        }
+      });
+    }
+
     function validationIssues() {
       const issues = [];
-      state.employees.forEach(emp => {
-        if (!emp.employeeCode) issues.push(`${emp.name}: Employee HRMS ID missing`);
-        if (!emp.bankAccount) issues.push(`${emp.name}: Bank account missing`);
-        if (n(emp.incomeTax) > 0 && !emp.pan) issues.push(`${emp.name}: PAN missing for income tax schedule`);
-        if ((n(emp.gpf) + n(emp.gpfLoan)) > 0 && !emp.gpfNo) issues.push(`${emp.name}: GPF account number missing`);
-        if (n(emp.apgli) > 0 && !emp.apgliPolicyNo) issues.push(`${emp.name}: APGLI policy number missing`);
-        if (n(emp.cps) > 0 && !emp.cpsNo) issues.push(`${emp.name}: CPS PRAN/account number missing`);
+      const employees = Array.isArray(state.employees) ? state.employees : [];
+
+      employees.forEach(emp => {
+        const empName = employeeValidationName(emp);
+        const pan = validationKey(emp.pan).toUpperCase();
+
+        if (!validationKey(emp.employeeCode)) issues.push(`${empName}: Employee HRMS ID missing`);
+        if (!validationKey(emp.treasuryId)) issues.push(`${empName}: CFMS ID missing`);
+        if (!validationKey(emp.bankAccount)) issues.push(`${empName}: Bank account missing`);
+        if (n(emp.incomeTax) > 0 && !pan) issues.push(`${empName}: PAN missing for income tax schedule`);
+        if (n(emp.incomeTax) > 0 && pan && !/^[A-Z]{5}[0-9]{4}[A-Z]$/.test(pan)) issues.push(`${empName}: PAN format looks invalid`);
+        if ((n(emp.gpf) + n(emp.gpfLoan)) > 0 && !validationKey(emp.gpfNo)) issues.push(`${empName}: GPF account number missing`);
+        if (n(emp.apgli) > 0 && !validationKey(emp.apgliPolicyNo)) issues.push(`${empName}: APGLI policy number missing`);
+        if (n(emp.cps) > 0 && !validationKey(emp.cpsNo)) issues.push(`${empName}: CPS PRAN/account number missing`);
       });
+
+      addDuplicateValidationIssues(issues, 'Bank account', employees.map(emp => ({
+        value: emp.bankAccount,
+        name: employeeValidationName(emp)
+      })));
+
+      addDuplicateValidationIssues(issues, 'CFMS ID', employees.map(emp => ({
+        value: emp.treasuryId,
+        name: employeeValidationName(emp)
+      })));
+
+      addDuplicateValidationIssues(issues, 'HRMS ID', employees.map(emp => ({
+        value: emp.employeeCode,
+        name: employeeValidationName(emp)
+      })));
+
       return issues;
+    }
+
+    function validationWarnings() {
+      const warnings = [];
+      const employees = Array.isArray(state.employees) ? state.employees : [];
+
+      employees.forEach(emp => {
+        const empName = employeeValidationName(emp);
+        const bank = validationKey(emp.bankAccount);
+        const ifsc = validationKey(emp.ifsc).toUpperCase();
+        const pan = validationKey(emp.pan).toUpperCase();
+
+        if (bank && !ifsc) warnings.push(`${empName}: IFSC missing for bank account`);
+        if (ifsc && !/^[A-Z]{4}0[A-Z0-9]{6}$/.test(ifsc)) warnings.push(`${empName}: IFSC format looks invalid`);
+        if (pan && ['ABCDE1234F', 'AAAAA0000A', 'PAN'].includes(pan)) warnings.push(`${empName}: PAN appears to be a placeholder`);
+      });
+
+      return warnings;
+    }
+
+    function validationDashboardPanel(issues = [], warnings = []) {
+      if (!issues.length && !warnings.length) return '';
+      return `
+        <div class="card" style="margin-top:16px;border-color:${issues.length ? '#fecaca' : '#fed7aa'}">
+          <div class="section-title">
+            <div>
+              <h3>${issues.length ? 'Blocking Validation Errors' : 'Validation Warnings'}</h3>
+              <p>${issues.length ? 'These must be corrected before final submission.' : 'These should be reviewed before final submission.'}</p>
+            </div>
+            <span class="pill ${issues.length ? 'danger' : 'warn'}">${issues.length} error(s), ${warnings.length} warning(s)</span>
+          </div>
+          ${issues.length ? `<div class="notice" style="background:#fff1f2;color:#991b1b;border-color:#fecaca;margin-bottom:10px"><strong>Final Submit is blocked.</strong> Correct the errors below, reload Google Sheet, and check again.</div>` : ''}
+          <div class="list">
+            ${issues.map(x => `<div class="pill danger">${escapeHtml(x)}</div>`).join('')}
+            ${warnings.map(x => `<div class="pill warn">${escapeHtml(x)}</div>`).join('')}
+          </div>
+        </div>
+      `;
     }
 
     function isFinalSubmitted() {
@@ -3145,6 +3231,7 @@ Paste the deployed Apps Script Web App URL into PAYBILL_GITHUB_API_URL.
     function dashboardView() {
       const t = totals();
       const issues = validationIssues();
+      const warnings = validationWarnings();
       const highest = [...state.employees].sort((a,b) => calcEmployee(b).netPay - calcEmployee(a).netPay).slice(0, 5);
       return `
         <div class="dashboard-month-banner">
@@ -3161,6 +3248,8 @@ Paste the deployed Apps Script Web App URL into PAYBILL_GITHUB_API_URL.
           ${metric('Total Deductions', '₹ ' + money(t.deductions), 'Government deductions')}
           ${metric('Net Payable', '₹ ' + money(t.netPay), 'Amount payable')}
         </div>
+
+        ${validationDashboardPanel(issues, warnings)}
 
         <div class="split" style="margin-top:16px">
           <div class="card">
@@ -3179,14 +3268,14 @@ Paste the deployed Apps Script Web App URL into PAYBILL_GITHUB_API_URL.
           <div class="card">
             <div class="section-title">
               <div><h3>Data health</h3><p>Items to complete before final bill submission</p></div>
-              <span class="pill ${issues.length ? 'warn' : 'good'}">${issues.length ? issues.length + ' issues' : 'Ready'}</span>
+              <span class="pill ${issues.length ? 'danger' : (warnings.length ? 'warn' : 'good')}">${issues.length ? issues.length + ' error(s)' : (warnings.length ? warnings.length + ' warning(s)' : 'Ready')}</span>
             </div>
             <div class="${issues.length ? 'notice' : 'ok-notice'}">
-              ${issues.length ? 'The Excel file had several broken links in deduction schedules. The app protects the reports and flags missing master fields.' : 'All required master fields are complete.'}
+              ${issues.length ? 'Blocking validation errors found. Final submission is disabled until these are corrected.' : (warnings.length ? 'No blocking errors found, but some records need review.' : 'All required master fields are complete.')}
             </div>
             <div class="list" style="margin-top:12px">
-              ${(issues.slice(0, 8).map(x => `<div class="pill warn">${escapeHtml(x)}</div>`).join('')) || '<div class="pill good">No blocking validation issues found.</div>'}
-              ${issues.length > 8 ? `<div class="muted">+ ${issues.length - 8} more items</div>` : ''}
+              ${(issues.slice(0, 8).map(x => `<div class="pill danger">${escapeHtml(x)}</div>`).join('')) || (warnings.slice(0, 8).map(x => `<div class="pill warn">${escapeHtml(x)}</div>`).join('')) || '<div class="pill good">No blocking validation issues found.</div>'}
+              ${(issues.length + warnings.length) > 8 ? `<div class="muted">+ ${(issues.length + warnings.length) - 8} more item(s)</div>` : ''}
             </div>
           </div>
         </div>
