@@ -2236,7 +2236,9 @@ Paste the deployed Apps Script Web App URL into PAYBILL_GITHUB_API_URL.
 
     function PAYBILL_isApiConfigured_() {
       return PAYBILL_GITHUB_API_URL &&
-        !PAYBILL_GITHUB_API_URL.includes("https://script.google.com/macros/s/AKfycbw0y-KHoNxzLklQ14FUsB-W3qe72r7Ey6yM0IPdkQTuWJL3G4ts5l8NDqPVPeyx0Kow8g/exec");
+        PAYBILL_GITHUB_API_URL.startsWith("https://script.google.com/macros/s/") &&
+        !PAYBILL_GITHUB_API_URL.includes("PASTE_APPS_SCRIPT_WEB_APP_URL_HERE") &&
+        !PAYBILL_GITHUB_API_URL.includes("YOUR_LATEST_APPS_SCRIPT_WEB_APP_URL");
     }
 
     function PAYBILL_timeoutPromise_(ms) {
@@ -2878,6 +2880,31 @@ Paste the deployed Apps Script Web App URL into PAYBILL_GITHUB_API_URL.
       return `${cfms} || ${hrms}`;
     }
 
+    function employeeEditId(emp = {}) {
+      // Primary edit key: Employee HRMS ID. Fallback: CFMS ID, then internal id.
+      // This avoids row-index editing while still opening the exact employee record.
+      return validationKey(emp.employeeCode) || validationKey(emp.treasuryId) || validationKey(emp.id);
+    }
+
+    function findEmployeeIndexByEditId(employeeId) {
+      const key = validationKey(employeeId);
+      if (!key) return -1;
+      return state.employees.findIndex(emp =>
+        validationKey(emp.employeeCode) === key ||
+        validationKey(emp.treasuryId) === key ||
+        validationKey(emp.id) === key
+      );
+    }
+
+    function ensureStableEmployeeIds() {
+      if (!Array.isArray(state.employees)) return;
+      state.employees.forEach((emp, index) => {
+        const stableId = employeeEditId(emp);
+        if (!validationKey(emp.id) && stableId) emp.id = stableId;
+        if (!validationKey(emp.id)) emp.id = `EMP${Date.now()}_${index + 1}`;
+      });
+    }
+
     function formatPayrollMonth(value) {
       const raw = String(value || '').trim();
       if (!raw) return 'CURRENT MONTH';
@@ -3357,7 +3384,7 @@ Paste the deployed Apps Script Web App URL into PAYBILL_GITHUB_API_URL.
               <td class="num">${
                 isFinalSubmitted()
                   ? '<span class="pill lock">Locked</span>'
-                  : `<button class="btn small ${emp.finalReviewSaved === true ? 'saved-review' : 'pending-review'}" onclick="openEmployeeModal('${emp.id}')">${emp.finalReviewSaved === true ? 'Saved' : 'Edit'}</button>`
+                  : `<button class="btn small ${emp.finalReviewSaved === true ? 'saved-review' : 'pending-review'}" onclick="openEmployeeModal('${escapeAttr(employeeEditId(emp))}')">${emp.finalReviewSaved === true ? 'Saved' : 'Edit'}</button>`
               }</td>
             </tr>`;
           }).join('') : '<tr><td colspan="10" class="muted">No employees found.</td></tr>'}
@@ -4604,13 +4631,21 @@ Paste the deployed Apps Script Web App URL into PAYBILL_GITHUB_API_URL.
       toast('Settings saved.');
     }
 
-    function openEmployeeModal(id='') {
+    function openEmployeeModal(employeeId='') {
       if (isFinalSubmitted()) {
         alert('This month is already final submitted. Use Reset Final Submission before editing employees.');
         return;
       }
-      const emp = id ? state.employees.find(e => e.id === id) : newEmployee();
-      if (!emp) return;
+
+      ensureStableEmployeeIds();
+      const editKey = validationKey(employeeId);
+      const employeeIndex = editKey ? findEmployeeIndexByEditId(editKey) : -1;
+      const emp = editKey ? state.employees[employeeIndex] : newEmployee();
+
+      if (!emp) {
+        alert('Employee record could not be found for Employee ID: ' + employeeId + '. Please reload Google Sheet and try again.');
+        return;
+      }
 
       const modal = document.getElementById('employeeModal');
       const body = document.getElementById('employeeFormBody');
@@ -4618,9 +4653,13 @@ Paste the deployed Apps Script Web App URL into PAYBILL_GITHUB_API_URL.
       modal.classList.add('open');
       document.body.classList.add('modal-open');
 
-      document.getElementById('modalTitle').textContent = id ? 'Edit Employee' : 'Add Employee';
-      document.getElementById('modalHint').textContent = id ? emp.name : 'Create a new employee pay record';
-      document.getElementById('employeeForm').dataset.id = id;
+      document.getElementById('modalTitle').textContent = editKey ? 'Edit Employee' : 'Add Employee';
+      document.getElementById('modalHint').textContent = editKey ? emp.name : 'Create a new employee pay record';
+
+      const form = document.getElementById('employeeForm');
+      form.dataset.employeeId = editKey;
+      form.dataset.id = editKey;
+
       body.innerHTML = employeeFormHtml(emp);
 
       modal.scrollTop = 0;
@@ -4868,7 +4907,7 @@ Paste the deployed Apps Script Web App URL into PAYBILL_GITHUB_API_URL.
         return;
       }
       const form = event.currentTarget;
-      const id = form.dataset.id || '';
+      const originalEmployeeId = validationKey(form.dataset.employeeId || form.dataset.id || '');
       const data = Object.fromEntries(new FormData(form).entries());
       const numeric = ['slNo','basicPay','daRate','hraRate','hraManual','principalAllowance','sp','fp','phcAllow','gpf','gpfLoan','apgli','gisInsuranceFund','gisSubscription','professionalTax','incomeTax','cps','ewfFlagFund','ehf','nonGovtDeductions'];
       numeric.forEach(k => data[k] = n(data[k]));
@@ -4880,9 +4919,14 @@ Paste the deployed Apps Script Web App URL into PAYBILL_GITHUB_API_URL.
       data.hraMode = data.hraMode === 'manual' ? 'manual' : 'percent';
       data.hraManual = data.hraMode === 'manual' ? n(data.hraManual) : 0;
       data.finalReviewSaved = true;
-      data.id = id || ('EMP' + Date.now());
-      if (id) {
-        const idx = state.employees.findIndex(e => e.id === id);
+      data.id = validationKey(data.employeeCode) || validationKey(data.treasuryId) || originalEmployeeId || ('EMP' + Date.now());
+
+      if (originalEmployeeId) {
+        const idx = findEmployeeIndexByEditId(originalEmployeeId);
+        if (idx === -1) {
+          alert('Could not save. Employee ID was not found in the loaded data. Please reload Google Sheet and try again.');
+          return;
+        }
         state.employees[idx] = { ...state.employees[idx], ...data };
       } else {
         state.employees.push(data);
@@ -4940,6 +4984,7 @@ Paste the deployed Apps Script Web App URL into PAYBILL_GITHUB_API_URL.
             return;
           }
           state = normalizeState(dataset);
+          ensureStableEmployeeIds();
           saveState();
           render();
           toast(`Loaded ${state.employees.length} employees from Google Sheet.`);
