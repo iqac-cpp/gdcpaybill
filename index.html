@@ -1,12 +1,12 @@
 <!--
 GDC PayBill Manager
-GitHub Two-File Stable Release: v1.0.1 EmployeeID backend fetch
+GitHub Two-File Stable Release: v1.0.2 EmployeeID frontend fetch
 File: index.html
 Base Frontend Version: Index v1.74 Saved Reports Search Button
 
 Important:
 This GitHub version runs from GitHub Pages.
-It includes a google.script.run compatibility bridge that forwards calls to the Apps Script Web App backend.
+It uses Apps Script for Load/Save, while employee edit opens instantly from the frontend data loaded into state.employees.
 Paste the deployed Apps Script Web App URL into PAYBILL_GITHUB_API_URL.
 -->
 
@@ -4676,36 +4676,20 @@ Paste the deployed Apps Script Web App URL into PAYBILL_GITHUB_API_URL.
 
       const key = validationKey(employeeId);
       if (!key) {
-        alert('EmployeeID missing. Please reload Google Sheet and try again.');
+        alert('EmployeeID missing. Please click Load Google Sheet and try again.');
         return;
       }
 
-      toast('Fetching employee details from backend...');
-      document.body.style.cursor = 'progress';
+      // Fast frontend lookup: after Load Google Sheet, all employees are already in state.employees.
+      // We open the modal from the frontend cache by stable EmployeeID/HRMS/CFMS, avoiding a slow per-edit backend call.
+      const localIndex = findEmployeeIndexByBackendId(key);
+      if (localIndex < 0) {
+        alert('Employee record not found in frontend data for EmployeeID: ' + key + '. Please click Load Google Sheet and try again.');
+        return;
+      }
 
-      google.script.run
-        .withSuccessHandler(result => {
-          document.body.style.cursor = '';
-          const response = result && result.result ? result.result : result;
-          const emp = response && response.employee ? response.employee : null;
-          if (!emp) {
-            alert('Employee details not found from backend for EmployeeID: ' + key);
-            return;
-          }
-
-          const localIndex = findEmployeeIndexByBackendId(key);
-          if (localIndex >= 0) {
-            state.employees[localIndex] = normalizeState({ master: state.master, employees: [{ ...state.employees[localIndex], ...emp }] }).employees[0];
-            saveState();
-          }
-
-          openEmployeeModalFromData(emp, key, true);
-        })
-        .withFailureHandler(error => {
-          document.body.style.cursor = '';
-          alert('Employee fetch failed: ' + (error && error.message ? error.message : error));
-        })
-        .PAYBILL_V117_getEmployeeByEmployeeId(key);
+      const emp = state.employees[localIndex];
+      openEmployeeModalFromData(emp, key, true);
     }
 
     function openEmployeeModalFromData(emp, employeeId='', isEdit=false) {
