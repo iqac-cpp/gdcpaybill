@@ -1,6 +1,6 @@
 <!--
 GDC PayBill Manager
-GitHub Two-File Stable Release: v1.0.0
+GitHub Two-File Stable Release: v1.0.1 EmployeeID backend fetch
 File: index.html
 Base Frontend Version: Index v1.74 Saved Reports Search Button
 
@@ -2227,53 +2227,85 @@ Paste the deployed Apps Script Web App URL into PAYBILL_GITHUB_API_URL.
     /*
      * GitHub frontend bridge
      * This keeps the old Apps Script frontend almost unchanged.
-     * In Apps Script HtmlService, google.script.run already exists.
      * In GitHub Pages, this shim creates google.script.run and forwards calls
-     * to the Apps Script Web App backend through POST.
+     * to the Apps Script Web App backend through JSONP GET.
+     * JSONP avoids the browser CORS "Failed to fetch" problem from GitHub Pages.
      */
-    const PAYBILL_GITHUB_API_URL = "https://script.google.com/macros/s/AKfycbw0y-KHoNxzLklQ14FUsB-W3qe72r7Ey6yM0IPdkQTuWJL3G4ts5l8NDqPVPeyx0Kow8g/exec";
+    const PAYBILL_GITHUB_API_URL = "https://script.google.com/macros/s/AKfycbzqsgpE1DJS6OsUnt9vaoJz2zZSIdwbOl63MDW-JiWNXFT-eLdcrty3TuDAoNKfY9ltBg/exec";
     const PAYBILL_API_TIMEOUT_MS = 180000;
 
     function PAYBILL_isApiConfigured_() {
-      return PAYBILL_GITHUB_API_URL &&
-        PAYBILL_GITHUB_API_URL.startsWith("https://script.google.com/macros/s/") &&
-        !PAYBILL_GITHUB_API_URL.includes("PASTE_APPS_SCRIPT_WEB_APP_URL_HERE") &&
-        !PAYBILL_GITHUB_API_URL.includes("YOUR_LATEST_APPS_SCRIPT_WEB_APP_URL");
+      const url = String(PAYBILL_GITHUB_API_URL || '').trim();
+      return /^https:\/\/script\.google\.com\/macros\/s\/.+\/exec$/.test(url) &&
+        !url.includes('PASTE_APPS_SCRIPT_WEB_APP_URL_HERE') &&
+        !url.includes('YOUR_LATEST_APPS_SCRIPT_WEB_APP_URL');
     }
 
     function PAYBILL_timeoutPromise_(ms) {
       return new Promise((_, reject) => {
-        setTimeout(() => reject(new Error("Backend request timed out.")), ms);
+        setTimeout(() => reject(new Error('Backend request timed out.')), ms);
       });
     }
 
-    async function PAYBILL_callBackend_(method, args) {
+    function PAYBILL_encodePayload_(value) {
+      const json = JSON.stringify(value);
+      if (window.TextEncoder) {
+        const bytes = new TextEncoder().encode(json);
+        let binary = '';
+        const chunkSize = 0x8000;
+        for (let i = 0; i < bytes.length; i += chunkSize) {
+          binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSize));
+        }
+        return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+      }
+      return btoa(unescape(encodeURIComponent(json))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+    }
+
+    function PAYBILL_callBackend_(method, args) {
       if (!PAYBILL_isApiConfigured_()) {
-        throw new Error("Apps Script Web App URL is not configured in index.html.");
+        return Promise.reject(new Error('Apps Script Web App URL is not configured in index.html.'));
       }
 
-      const request = fetch(PAYBILL_GITHUB_API_URL, {
-        method: "POST",
-        redirect: "follow",
-        headers: {
-          "Content-Type": "text/plain;charset=utf-8"
-        },
-        body: JSON.stringify({
-          method,
-          args: Array.isArray(args) ? args : []
-        })
-      }).then(async response => {
-        const text = await response.text();
-        let data;
-        try {
-          data = JSON.parse(text);
-        } catch (error) {
-          throw new Error("Backend returned non-JSON response. Check Apps Script deployment access.");
+      const request = new Promise((resolve, reject) => {
+        const callback = '__paybillCb_' + Date.now() + '_' + Math.floor(Math.random() * 1000000);
+        const script = document.createElement('script');
+        const url = new URL(PAYBILL_GITHUB_API_URL);
+
+        url.searchParams.set('method', method);
+        url.searchParams.set('callback', callback);
+
+        const safeArgs = Array.isArray(args) ? args : [];
+        if (safeArgs.length) {
+          url.searchParams.set('payload', PAYBILL_encodePayload_(safeArgs));
         }
-        if (data && data.ok === false) {
-          throw new Error(data.error || "Backend request failed.");
+
+        const timer = setTimeout(() => {
+          cleanup();
+          reject(new Error('Backend request timed out.'));
+        }, PAYBILL_API_TIMEOUT_MS);
+
+        function cleanup() {
+          clearTimeout(timer);
+          try { delete window[callback]; } catch (e) { window[callback] = undefined; }
+          if (script.parentNode) script.parentNode.removeChild(script);
         }
-        return data;
+
+        window[callback] = response => {
+          cleanup();
+          if (response && response.ok === false) {
+            reject(new Error(response.error || 'Backend request failed.'));
+            return;
+          }
+          resolve(response);
+        };
+
+        script.onerror = () => {
+          cleanup();
+          reject(new Error('Backend request failed. Check Apps Script deployment access and Web App URL.'));
+        };
+
+        script.src = url.toString();
+        document.body.appendChild(script);
       });
 
       return Promise.race([request, PAYBILL_timeoutPromise_(PAYBILL_API_TIMEOUT_MS)]);
@@ -2874,35 +2906,32 @@ Paste the deployed Apps Script Web App URL into PAYBILL_GITHUB_API_URL.
       return `${emp.employeeCode || emp.id || ''}${t}`;
     }
 
+
+
+    function employeeBackendId(emp) {
+      return String(emp?.id || emp?.employeeCode || emp?.treasuryId || '').trim();
+    }
+
+    function escapeJs(value) {
+      return String(value ?? '')
+        .replace(/\\/g, '\\\\')
+        .replace(/'/g, "\\'")
+        .replace(/\r?\n/g, ' ');
+    }
+
+    function findEmployeeIndexByBackendId(employeeId) {
+      const key = validationKey(employeeId);
+      if (!key) return -1;
+      return state.employees.findIndex(emp => {
+        const ids = [emp.id, emp.employeeCode, emp.treasuryId].map(validationKey).filter(Boolean);
+        return ids.includes(key);
+      });
+    }
+
     function payrollEmployeeIdText(emp) {
       const cfms = emp.treasuryId ? `CFMS: ${emp.treasuryId}` : 'CFMS: —';
       const hrms = emp.employeeCode ? `HRMS: ${emp.employeeCode}` : 'HRMS: —';
       return `${cfms} || ${hrms}`;
-    }
-
-    function employeeEditId(emp = {}) {
-      // Primary edit key: Employee HRMS ID. Fallback: CFMS ID, then internal id.
-      // This avoids row-index editing while still opening the exact employee record.
-      return validationKey(emp.employeeCode) || validationKey(emp.treasuryId) || validationKey(emp.id);
-    }
-
-    function findEmployeeIndexByEditId(employeeId) {
-      const key = validationKey(employeeId);
-      if (!key) return -1;
-      return state.employees.findIndex(emp =>
-        validationKey(emp.employeeCode) === key ||
-        validationKey(emp.treasuryId) === key ||
-        validationKey(emp.id) === key
-      );
-    }
-
-    function ensureStableEmployeeIds() {
-      if (!Array.isArray(state.employees)) return;
-      state.employees.forEach((emp, index) => {
-        const stableId = employeeEditId(emp);
-        if (!validationKey(emp.id) && stableId) emp.id = stableId;
-        if (!validationKey(emp.id)) emp.id = `EMP${Date.now()}_${index + 1}`;
-      });
     }
 
     function formatPayrollMonth(value) {
@@ -3384,7 +3413,7 @@ Paste the deployed Apps Script Web App URL into PAYBILL_GITHUB_API_URL.
               <td class="num">${
                 isFinalSubmitted()
                   ? '<span class="pill lock">Locked</span>'
-                  : `<button class="btn small ${emp.finalReviewSaved === true ? 'saved-review' : 'pending-review'}" onclick="openEmployeeModal('${escapeAttr(employeeEditId(emp))}')">${emp.finalReviewSaved === true ? 'Saved' : 'Edit'}</button>`
+                  : `<button class="btn small ${emp.finalReviewSaved === true ? 'saved-review' : 'pending-review'}" onclick="openEmployeeModalByEmployeeId('${escapeJs(employeeBackendId(emp))}')">${emp.finalReviewSaved === true ? 'Saved' : 'Edit'}</button>`
               }</td>
             </tr>`;
           }).join('') : '<tr><td colspan="10" class="muted">No employees found.</td></tr>'}
@@ -4632,33 +4661,72 @@ Paste the deployed Apps Script Web App URL into PAYBILL_GITHUB_API_URL.
     }
 
     function openEmployeeModal(employeeId='') {
+      if (employeeId) {
+        openEmployeeModalByEmployeeId(employeeId);
+        return;
+      }
+      openEmployeeModalFromData(newEmployee(), '', false);
+    }
+
+    function openEmployeeModalByEmployeeId(employeeId) {
       if (isFinalSubmitted()) {
         alert('This month is already final submitted. Use Reset Final Submission before editing employees.');
         return;
       }
 
-      ensureStableEmployeeIds();
-      const editKey = validationKey(employeeId);
-      const employeeIndex = editKey ? findEmployeeIndexByEditId(editKey) : -1;
-      const emp = editKey ? state.employees[employeeIndex] : newEmployee();
-
-      if (!emp) {
-        alert('Employee record could not be found for Employee ID: ' + employeeId + '. Please reload Google Sheet and try again.');
+      const key = validationKey(employeeId);
+      if (!key) {
+        alert('EmployeeID missing. Please reload Google Sheet and try again.');
         return;
       }
 
+      toast('Fetching employee details from backend...');
+      document.body.style.cursor = 'progress';
+
+      google.script.run
+        .withSuccessHandler(result => {
+          document.body.style.cursor = '';
+          const response = result && result.result ? result.result : result;
+          const emp = response && response.employee ? response.employee : null;
+          if (!emp) {
+            alert('Employee details not found from backend for EmployeeID: ' + key);
+            return;
+          }
+
+          const localIndex = findEmployeeIndexByBackendId(key);
+          if (localIndex >= 0) {
+            state.employees[localIndex] = normalizeState({ master: state.master, employees: [{ ...state.employees[localIndex], ...emp }] }).employees[0];
+            saveState();
+          }
+
+          openEmployeeModalFromData(emp, key, true);
+        })
+        .withFailureHandler(error => {
+          document.body.style.cursor = '';
+          alert('Employee fetch failed: ' + (error && error.message ? error.message : error));
+        })
+        .PAYBILL_V117_getEmployeeByEmployeeId(key);
+    }
+
+    function openEmployeeModalFromData(emp, employeeId='', isEdit=false) {
+      if (isFinalSubmitted()) {
+        alert('This month is already final submitted. Use Reset Final Submission before editing employees.');
+        return;
+      }
+      if (!emp) return;
+
       const modal = document.getElementById('employeeModal');
       const body = document.getElementById('employeeFormBody');
+      const form = document.getElementById('employeeForm');
+      const stableId = validationKey(employeeId || employeeBackendId(emp));
 
       modal.classList.add('open');
       document.body.classList.add('modal-open');
 
-      document.getElementById('modalTitle').textContent = editKey ? 'Edit Employee' : 'Add Employee';
-      document.getElementById('modalHint').textContent = editKey ? emp.name : 'Create a new employee pay record';
-
-      const form = document.getElementById('employeeForm');
-      form.dataset.employeeId = editKey;
-      form.dataset.id = editKey;
+      document.getElementById('modalTitle').textContent = isEdit ? 'Edit Employee' : 'Add Employee';
+      document.getElementById('modalHint').textContent = isEdit ? (emp.name || stableId) : 'Create a new employee pay record';
+      form.dataset.id = stableId;
+      form.dataset.employeeId = stableId;
 
       body.innerHTML = employeeFormHtml(emp);
 
@@ -4919,23 +4987,27 @@ Paste the deployed Apps Script Web App URL into PAYBILL_GITHUB_API_URL.
       data.hraMode = data.hraMode === 'manual' ? 'manual' : 'percent';
       data.hraManual = data.hraMode === 'manual' ? n(data.hraManual) : 0;
       data.finalReviewSaved = true;
-      data.id = validationKey(data.employeeCode) || validationKey(data.treasuryId) || originalEmployeeId || ('EMP' + Date.now());
+
+      // EmployeeID is the stable key. Keep the original EmployeeID for existing rows.
+      // For new employees, use HRMS ID first, then CFMS ID, then a generated ID.
+      data.id = originalEmployeeId || validationKey(data.employeeCode) || validationKey(data.treasuryId) || ('EMP' + Date.now());
 
       if (originalEmployeeId) {
-        const idx = findEmployeeIndexByEditId(originalEmployeeId);
-        if (idx === -1) {
-          alert('Could not save. Employee ID was not found in the loaded data. Please reload Google Sheet and try again.');
-          return;
+        const idx = findEmployeeIndexByBackendId(originalEmployeeId);
+        if (idx >= 0) {
+          state.employees[idx] = { ...state.employees[idx], ...data };
+        } else {
+          state.employees.push(data);
         }
-        state.employees[idx] = { ...state.employees[idx], ...data };
       } else {
         state.employees.push(data);
       }
+
       state.employees.sort((a,b) => n(a.slNo) - n(b.slNo));
       saveState();
       closeEmployeeModal();
       render();
-      toast('Employee saved.');
+      toast('Employee saved. Click Save Google Sheet to update backend.');
     }
 
     function isCloudRuntime() {
@@ -4984,7 +5056,6 @@ Paste the deployed Apps Script Web App URL into PAYBILL_GITHUB_API_URL.
             return;
           }
           state = normalizeState(dataset);
-          ensureStableEmployeeIds();
           saveState();
           render();
           toast(`Loaded ${state.employees.length} employees from Google Sheet.`);
@@ -5001,6 +5072,7 @@ Paste the deployed Apps Script Web App URL into PAYBILL_GITHUB_API_URL.
       if (response.master && Array.isArray(response.employees)) return response;
       if (response.payload && response.payload.master && Array.isArray(response.payload.employees)) return response.payload;
       if (response.data && response.data.master && Array.isArray(response.data.employees)) return response.data;
+      if (response.result && response.result.master && Array.isArray(response.result.employees)) return response.result;
       return response;
     }
 
