@@ -2231,12 +2231,12 @@ Paste the deployed Apps Script Web App URL into PAYBILL_GITHUB_API_URL.
      * In GitHub Pages, this shim creates google.script.run and forwards calls
      * to the Apps Script Web App backend through POST.
      */
-    const PAYBILL_GITHUB_API_URL = "https://script.google.com/macros/s/AKfycbyo7vg8kpVUzkQWDwHPCbwnP42D3y4ZMqixg20bqzoG5WYlvWDdJXSOQ1vH9w5pDJ-2/exec";
+    const PAYBILL_GITHUB_API_URL = "https://script.google.com/macros/s/AKfycbw0y-KHoNxzLklQ14FUsB-W3qe72r7Ey6yM0IPdkQTuWJL3G4ts5l8NDqPVPeyx0Kow8g/exec";
     const PAYBILL_API_TIMEOUT_MS = 180000;
 
     function PAYBILL_isApiConfigured_() {
       return PAYBILL_GITHUB_API_URL &&
-        !PAYBILL_GITHUB_API_URL.includes("PASTE_APPS_SCRIPT_WEB_APP_URL_HERE");
+        !PAYBILL_GITHUB_API_URL.includes("https://script.google.com/macros/s/AKfycbw0y-KHoNxzLklQ14FUsB-W3qe72r7Ey6yM0IPdkQTuWJL3G4ts5l8NDqPVPeyx0Kow8g/exec");
     }
 
     function PAYBILL_timeoutPromise_(ms) {
