@@ -5356,6 +5356,17 @@ Paste the deployed Apps Script Web App URL into PAYBILL_GITHUB_API_URL.
       });
     }
 
+
+
+    function finalSubmitFromServerSide(revision) {
+      return new Promise((resolve, reject) => {
+        google.script.run
+          .withSuccessHandler(resolve)
+          .withFailureHandler(reject)
+          .PAYBILL_V170_finalSubmitFromSheet({ revision });
+      });
+    }
+
     async function finalSubmitMonthlyBill() {
       if (isFinalSubmitted()) {
         alert('This month is already final submitted. Use Reset Final Submission if corrections are required.');
@@ -5364,12 +5375,12 @@ Paste the deployed Apps Script Web App URL into PAYBILL_GITHUB_API_URL.
 
       const issues = validationIssues();
       if (issues.length) {
-        alert('Please clear validation issues before final submission.\\n\\n' + issues.slice(0, 12).join('\\n'));
+        alert('Please clear validation issues before final submission.\n\n' + issues.slice(0, 12).join('\n'));
         return;
       }
 
       if (!isCloudRuntime()) {
-        alert('Final Submit works only after this HTML is deployed from Google Apps Script.');
+        alert('Final Submit works only after the GitHub page is connected to Apps Script backend.');
         return;
       }
 
@@ -5390,38 +5401,29 @@ Paste the deployed Apps Script Web App URL into PAYBILL_GITHUB_API_URL.
         finalResetBy: state.master.finalResetBy
       };
 
-      state.master.finalSubmissionStatus = 'FinalSubmitted';
-      state.master.finalSubmissionRevision = revision;
-      state.master.finalSubmittedAt = new Date().toISOString();
-      state.master.finalSubmittedBy = '';
-      saveState();
-      render();
-
       document.body.style.cursor = 'progress';
 
       try {
-        for (let i = 0; i < reports.length; i++) {
-          const def = reports[i];
-          setFinalSubmitProgress(`Generating PDF ${i + 1} of ${reports.length}: ${def.label}...`);
-          await saveFinalReportPdfToDrive(def, revision);
-        }
-
-        setFinalSubmitProgress('Saving final submission status to Google Sheet...');
+        setFinalSubmitProgress('Saving latest employee/payroll data to Google Sheet...');
         await savePaybillDataToCloud();
 
-        let payslipResult = null;
-        let payslipWarning = '';
-        try {
-          setFinalSubmitProgress('Generating monthly payslips automatically...');
-          payslipResult = await generatePayslipsAfterFinalSubmission();
-        } catch (payslipError) {
-          payslipWarning = payslipError && payslipError.message ? payslipError.message : String(payslipError || 'Payslip generation failed.');
-        }
+        setFinalSubmitProgress('Generating final PDFs on Apps Script server. Please wait...');
+        const result = await finalSubmitFromServerSide(revision);
 
-        const payslipMessage = payslipResult ? ` ${payslipResult.employees || 0} payslip(s) generated.` : (payslipWarning ? ' Payslip generation needs attention.' : '');
-        setFinalSubmitProgress(`Final submission completed. ${reports.length} PDFs saved/replaced in Drive.${payslipMessage}`, payslipWarning ? 'success' : 'success');
+        const savedCount = result && result.reportCount ? result.reportCount : reports.length;
+        const payslipResult = result && result.payslipResult ? result.payslipResult : null;
+        const payslipWarning = result && result.payslipWarning ? result.payslipWarning : '';
+
+        state.master.finalSubmissionStatus = 'FinalSubmitted';
+        state.master.finalSubmissionRevision = result && result.revision ? result.revision : revision;
+        state.master.finalSubmittedAt = result && result.submittedAt ? result.submittedAt : new Date().toISOString();
+        state.master.finalSubmittedBy = result && result.submittedBy ? result.submittedBy : '';
+        saveState();
+
+        const payslipMessage = payslipResult ? ` ${payslipResult.employees || payslipResult.count || 0} payslip(s) generated.` : (payslipWarning ? ' Payslip generation needs attention.' : '');
+        setFinalSubmitProgress(`Final submission completed. ${savedCount} PDFs saved/replaced in Drive.${payslipMessage}`, 'success');
         toast('Final submission completed and employee editing locked.');
-        await finalSubmitSuccessDialog(month, reports.length, payslipResult, payslipWarning);
+        await finalSubmitSuccessDialog(month, savedCount, payslipResult, payslipWarning);
         render();
 
       } catch (error) {
