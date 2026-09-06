@@ -2237,8 +2237,8 @@ Paste the deployed Apps Script Web App URL into PAYBILL_GITHUB_API_URL.
     function PAYBILL_isApiConfigured_() {
       const url = String(PAYBILL_GITHUB_API_URL || '').trim();
       return /^https:\/\/script\.google\.com\/macros\/s\/.+\/exec$/.test(url) &&
-        !url.includes('PASTE_APPS_SCRIPT_WEB_APP_URL_HERE') &&
-        !url.includes('YOUR_LATEST_APPS_SCRIPT_WEB_APP_URL');
+        !url.includes('https://script.google.com/macros/s/AKfycbwxgItY2_CG9u2-HvtZ6xKgDRURkoZisvhZDtVfajOpS8ZEoxZv0prEFNcvEV-dDa7r/exec') &&
+        !url.includes('https://script.google.com/macros/s/AKfycbwxgItY2_CG9u2-HvtZ6xKgDRURkoZisvhZDtVfajOpS8ZEoxZv0prEFNcvEV-dDa7r/exec');
     }
 
     function PAYBILL_timeoutPromise_(ms) {
